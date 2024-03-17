@@ -12,6 +12,13 @@ struct App {
 #[derive(Subcommand, Debug)]
 enum Command {
     Init,
+    CatFile {
+        #[arg(short)]
+        pretty: bool,
+
+        #[arg(value_name = "object")]
+        object_hash: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -20,5 +27,9 @@ fn main() -> Result<()> {
     let app = App::parse();
     match &app.command {
         Command::Init => subcommand::init::run(),
+        Command::CatFile {
+            pretty,
+            object_hash,
+        } => subcommand::cat_file::run(*pretty, object_hash),
     }
 }
