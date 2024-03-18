@@ -15,7 +15,7 @@ pub fn run() -> Result<()> {
     fs::create_dir(".git/refs").context("create .git/refs")?;
     fs::write(".git/HEAD", b"ref: refs/heads/main\n").context("create .git/HEAD")?;
 
-    eprintln!("Initialized Git repository in {}/.git", pwd.display());
+    println!("Initialized Git repository in {}/.git", pwd.display());
 
     Ok(())
 }

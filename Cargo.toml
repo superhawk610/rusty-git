@@ -10,8 +10,6 @@ clap = { version = "4.5.2", features = ["derive"] }
 color-eyre = "0.6.2"
 eyre = "0.6.12"
 flate2 = "1.0.28"
-
-# always compile `backtrace` with release optimizations to get decent dev
-# performance out of `color-eyre`
-[profile.dev.package.backtrace]
-opt-level = 3
+io_tee = "0.1.1"
+sha1 = "0.10.6"
+tempfile = "3.10.1"

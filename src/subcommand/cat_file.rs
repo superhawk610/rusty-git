@@ -57,6 +57,7 @@ pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
 
             Ok(())
         }
+        // TODO: implement cat-file for commits & trees
         Ok(object_type) => eyre::bail!("unsupported object type {object_type:?}"),
         Err(object_type) => eyre::bail!("unrecognized object type {object_type}"),
     }
