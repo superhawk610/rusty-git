@@ -25,6 +25,13 @@ enum Command {
 
         path: String,
     },
+    LsTree {
+        #[arg(value_name = "tree_sha")]
+        object_hash: String,
+
+        #[arg(long)]
+        name_only: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -38,5 +45,9 @@ fn main() -> Result<()> {
             object_hash,
         } => subcommand::cat_file::run(pretty, &object_hash),
         Command::HashObject { write, path } => subcommand::hash_object::run(write, &path),
+        Command::LsTree {
+            object_hash,
+            name_only,
+        } => subcommand::ls_tree::run(name_only, &object_hash),
     }
 }
