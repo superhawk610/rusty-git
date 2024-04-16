@@ -13,12 +13,16 @@ struct TreeEntry {
 }
 
 pub fn run(name_only: bool, object_hash: &str) -> Result<()> {
-    let mut object = ObjectBuf::read_at_hash(object_hash)?;
+    let object = ObjectBuf::read_at_hash(object_hash)?;
+    print_tree(name_only, object)
+}
 
+pub(crate) fn print_tree(name_only: bool, mut object: ObjectBuf) -> Result<()> {
     if object.object_type != ObjectType::Tree {
         eyre::bail!("the object specified by the given hash isn't a tree object");
     }
 
+    // FIXME: move object parsing into object.rs
     let mut entries = Vec::new();
     loop {
         let mut mode = Vec::new();
@@ -61,13 +65,22 @@ pub fn run(name_only: bool, object_hash: &str) -> Result<()> {
         }
     }
 
-    if name_only {
-        for entry in entries.iter() {
-            println!("{}", entry.name);
+    for entry in entries.iter() {
+        if !name_only {
+            let mode = &entry.mode;
+            let object_type = if mode.trim_start_matches('0') == "40000" {
+                "tree"
+            } else {
+                "blob"
+            };
+            print!("{mode:0>6} {object_type} ");
+            for byte in entry.sha {
+                print!("{byte:0>2x}");
+            }
+            print!("\t");
         }
-    } else {
-        // FIXME: implement full detail listing
-        eyre::bail!("tree listing with full details not yet implemented");
+
+        println!("{}", entry.name);
     }
 
     Ok(())

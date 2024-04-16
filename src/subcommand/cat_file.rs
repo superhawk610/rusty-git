@@ -30,7 +30,10 @@ pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
             Ok(())
         }
 
-        // TODO: implement cat-file for commits & trees
+        // tree objects delegate to `ls-tree`
+        ObjectType::Tree => crate::subcommand::ls_tree::print_tree(false, object),
+
+        // TODO: implement cat-file for commits
         object_type => eyre::bail!("unsupported object type {object_type:?}"),
     }
 }
