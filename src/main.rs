@@ -33,6 +33,16 @@ enum Command {
         name_only: bool,
     },
     WriteTree,
+    CommitTree {
+        #[arg(value_name = "tree_sha")]
+        object_hash: String,
+
+        #[arg(short)]
+        parent_hash: Vec<String>,
+
+        #[arg(short)]
+        message: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -51,5 +61,10 @@ fn main() -> Result<()> {
             name_only,
         } => subcommand::ls_tree::run(name_only, &object_hash),
         Command::WriteTree => subcommand::write_tree::run(),
+        Command::CommitTree {
+            object_hash,
+            parent_hash,
+            message,
+        } => subcommand::commit_tree::run(object_hash, parent_hash, message),
     }
 }

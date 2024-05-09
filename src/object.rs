@@ -1,3 +1,4 @@
+use crate::commit::Commit;
 use crate::parser::{ParseError, Parser};
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
@@ -16,6 +17,7 @@ use tempfile::NamedTempFile;
 pub enum Object {
     Blob(PathBuf),
     Tree(PathBuf),
+    Commit(Commit),
 }
 
 #[derive(Debug)]
@@ -81,10 +83,15 @@ impl Object {
         Self::Tree(path.into())
     }
 
+    pub fn commit(commit: Commit) -> Self {
+        Self::Commit(commit)
+    }
+
     pub fn path(&self) -> &PathBuf {
         match self {
             Self::Blob(path) => path,
             Self::Tree(path) => path,
+            Self::Commit(_) => panic!("attempted to call .path() on a commit object"),
         }
     }
 
@@ -107,7 +114,7 @@ impl Object {
             Self::Blob(path) => {
                 let meta = std::fs::metadata(path).context("stat file")?;
                 let mut f = File::open(path).context("open file")?;
-                write!(w, "blob {}\0", meta.len()).unwrap();
+                write!(w, "blob {}\0", meta.len())?;
                 std::io::copy(&mut f, &mut w).context("hash file contents")?;
 
                 Ok(())
@@ -148,6 +155,7 @@ impl Object {
                         str.push("/");
                         str
                     }
+                    Object::Commit(_) => unreachable!(),
                 });
 
                 let mut buf = Vec::new();
@@ -163,8 +171,24 @@ impl Object {
                     buf.write_all(&obj.hash(true)?.as_bytes())?;
                 }
 
-                write!(w, "tree {}\0", buf.len()).unwrap();
+                write!(w, "tree {}\0", buf.len())?;
                 w.write_all(&buf).context("tree contents")?;
+
+                Ok(())
+            }
+            Self::Commit(commit) => {
+                let mut buf = Vec::new();
+
+                writeln!(buf, "tree {}", commit.tree_hash)?;
+                for parent_hash in commit.parent_hashes.iter() {
+                    writeln!(buf, "parent {parent_hash}")?;
+                }
+                writeln!(buf, "author {}", commit.author)?;
+                writeln!(buf, "committer {}", commit.committer)?;
+                writeln!(buf, "\n{}", commit.message)?;
+
+                write!(w, "commit {}\0", buf.len()).unwrap();
+                w.write_all(&buf).context("commit contents")?;
 
                 Ok(())
             }
