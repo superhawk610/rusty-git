@@ -1,6 +1,5 @@
 use crate::object::{ObjectBuf, ObjectType};
 use eyre::{Context, Result};
-use std::io::Read;
 
 pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
     eyre::ensure!(pretty, "only pretty-printing is supported for now");
@@ -9,18 +8,15 @@ pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
     match &object.object_type {
         // FIXME: move object parsing into object.rs
         ObjectType::Blob => {
-            let mut buf = Vec::new();
-            buf.reserve_exact(object.content_len);
-            buf.resize(object.content_len, 0);
+            let mut buf = vec![0; object.content_len];
+
             object
                 .contents
                 .read_exact(&mut buf)
                 .context("read blob contents")?;
 
-            let mut overflow = vec![0];
-            match object.contents.read_exact(&mut overflow) {
-                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => (),
-                _ => eyre::bail!("blob contains more bytes than its content length specified"),
+            if !object.contents.at_eof()? {
+                eyre::bail!("blob contains more bytes than its content length specified");
             }
 
             let mut stdout = std::io::stdout().lock();

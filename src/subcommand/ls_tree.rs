@@ -1,9 +1,5 @@
 use crate::object::{ObjectBuf, ObjectType};
 use eyre::{Context, Result};
-use std::{
-    ffi::CString,
-    io::{BufRead, Read},
-};
 
 #[derive(Debug)]
 struct TreeEntry {
@@ -25,20 +21,15 @@ pub(crate) fn print_tree(name_only: bool, mut object: ObjectBuf) -> Result<()> {
     // FIXME: move object parsing into object.rs
     let mut entries = Vec::new();
     loop {
-        let mut mode = Vec::new();
-        object
+        let mode = object
             .contents
-            .read_until(b' ', &mut mode)
+            .parse_str(b' ')
             .context("read tree entry mode")?;
-        let mut mode = String::from_utf8(mode).context("parse tree entry mode as UTF-8")?;
-        let _ = mode.pop(); // remove trailing space
 
-        let mut name = Vec::new();
-        object
+        let name = object
             .contents
-            .read_until(b'\0', &mut name)
+            .parse_str(b'\0')
             .context("read tree entry name")?;
-        let name = CString::from_vec_with_nul(name).unwrap();
 
         let mut sha_buf = vec![0; 20];
         object
@@ -48,19 +39,12 @@ pub(crate) fn print_tree(name_only: bool, mut object: ObjectBuf) -> Result<()> {
 
         entries.push(TreeEntry {
             mode,
-            name: name
-                .into_string()
-                .context("parse tree entry name as UTF-8")?,
+            name,
             sha: sha_buf.as_slice().try_into().unwrap(),
         });
 
         // once we reach EOF, break from the loop
-        if object
-            .contents
-            .fill_buf()
-            .context("peek tree contents")?
-            .is_empty()
-        {
+        if object.contents.at_eof()? {
             break;
         }
     }
