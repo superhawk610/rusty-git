@@ -32,6 +32,7 @@ enum Command {
         #[arg(long)]
         name_only: bool,
     },
+    WriteTree,
 }
 
 fn main() -> Result<()> {
@@ -49,5 +50,6 @@ fn main() -> Result<()> {
             object_hash,
             name_only,
         } => subcommand::ls_tree::run(name_only, &object_hash),
+        Command::WriteTree => subcommand::write_tree::run(),
     }
 }
