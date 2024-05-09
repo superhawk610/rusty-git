@@ -1,4 +1,4 @@
-use crate::parser::Parser;
+use crate::parser::{ParseError, Parser};
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
 use std::fs::File;
@@ -24,11 +24,13 @@ impl ObjectBuf {
         let reader = BufReader::new(decoder);
         let mut parser = Parser::new(reader);
 
-        let object_type = parser.parse_str(b' ').context("object header")?;
-        let object_type = match ObjectType::from_str(object_type.as_str()) {
+        let object_type = match parser.parse::<ObjectType>(b' ') {
             Ok(object_type) => object_type,
-            Err(object_type) => {
+            Err(ParseError::Parse(object_type)) => {
                 return Err(eyre::eyre!("unrecognized object type {object_type}"));
+            }
+            Err(ParseError::Read(err)) => {
+                return Err(err);
             }
         };
 

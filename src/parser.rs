@@ -1,8 +1,15 @@
 use eyre::{Context, Result};
 use std::io::BufRead;
+use std::str::FromStr;
 
 pub struct Parser<R: BufRead> {
     inner: R,
+}
+
+#[derive(Debug)]
+pub enum ParseError<Err> {
+    Read(eyre::Report),
+    Parse(Err),
 }
 
 impl<R: BufRead> Parser<R> {
@@ -22,6 +29,16 @@ impl<R: BufRead> Parser<R> {
 
     pub fn parse_usize(&mut self, delim: u8) -> Result<usize> {
         Ok(self.parse_str(delim)?.parse()?)
+    }
+
+    pub fn parse<T: FromStr>(
+        &mut self,
+        delim: u8,
+    ) -> std::result::Result<T, ParseError<<T as FromStr>::Err>> {
+        match self.parse_str(delim) {
+            Ok(str) => str.parse::<T>().map_err(ParseError::Parse),
+            Err(err) => Err(ParseError::Read(err)),
+        }
     }
 
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
