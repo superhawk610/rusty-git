@@ -43,6 +43,13 @@ enum Command {
         #[arg(short)]
         message: String,
     },
+    Clone {
+        #[arg(value_name = "repo_url")]
+        repo_url: String,
+
+        #[arg(value_name = "dir")]
+        output_dir: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -66,5 +73,9 @@ fn main() -> Result<()> {
             parent_hash,
             message,
         } => subcommand::commit_tree::run(object_hash, parent_hash, message),
+        Command::Clone {
+            repo_url,
+            output_dir,
+        } => subcommand::clone::run(&repo_url, output_dir.as_deref()),
     }
 }
