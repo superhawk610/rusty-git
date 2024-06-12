@@ -1,10 +1,17 @@
 use crate::object::{ObjectBuf, ObjectType};
 use eyre::{Context, Result};
+use std::io::BufRead;
 
 pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
     eyre::ensure!(pretty, "only pretty-printing is supported for now");
 
-    let mut object = ObjectBuf::read_at_hash(object_hash)?;
+    let object = ObjectBuf::read_at_hash(object_hash)?;
+    print_obj(object)?;
+
+    Ok(())
+}
+
+pub fn print_obj<R: BufRead>(mut object: ObjectBuf<R>) -> Result<()> {
     match &object.object_type {
         // FIXME: move object parsing into object.rs
         ObjectType::Blob => {
@@ -29,7 +36,12 @@ pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
         // tree objects delegate to `ls-tree`
         ObjectType::Tree => crate::subcommand::ls_tree::print_tree(false, object),
 
-        // TODO: implement cat-file for commits
-        object_type => eyre::bail!("unsupported object type {object_type:?}"),
+        ObjectType::Commit => {
+            let mut buf = vec![0; object.content_len];
+            object.contents.read_exact(&mut buf)?;
+            println!("{}", String::from_utf8_lossy(&buf));
+
+            Ok(())
+        }
     }
 }

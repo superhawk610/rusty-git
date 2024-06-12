@@ -7,7 +7,7 @@ use io_tee::TeeWriter;
 use sha1::{Digest, Sha1};
 use std::fmt::{Debug, Display};
 use std::fs::File;
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -226,13 +226,13 @@ impl Object {
     }
 }
 
-pub struct ObjectBuf {
+pub struct ObjectBuf<R: BufRead> {
     pub object_type: ObjectType,
     pub content_len: usize,
-    pub contents: Parser<BufReader<ZlibDecoder<File>>>,
+    pub contents: Parser<R>,
 }
 
-impl ObjectBuf {
+impl ObjectBuf<BufReader<ZlibDecoder<File>>> {
     pub fn read_at_hash(object_hash: &str) -> Result<Self> {
         let f = File::open(format!(
             ".git/objects/{}/{}",

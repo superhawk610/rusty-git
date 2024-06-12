@@ -1,5 +1,6 @@
 use crate::object::{ObjectBuf, ObjectType};
 use eyre::{Context, Result};
+use std::io::BufRead;
 
 #[derive(Debug)]
 struct TreeEntry {
@@ -13,7 +14,7 @@ pub fn run(name_only: bool, object_hash: &str) -> Result<()> {
     print_tree(name_only, object)
 }
 
-pub(crate) fn print_tree(name_only: bool, mut object: ObjectBuf) -> Result<()> {
+pub(crate) fn print_tree<R: BufRead>(name_only: bool, mut object: ObjectBuf<R>) -> Result<()> {
     if object.object_type != ObjectType::Tree {
         eyre::bail!("the object specified by the given hash isn't a tree object");
     }
