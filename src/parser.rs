@@ -1,11 +1,18 @@
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
-use std::io::Read;
-use std::io::{BufRead, BufReader, Cursor};
+use std::fmt::Debug;
+use std::io::{BufRead, BufReader, Cursor, Seek};
+use std::io::{Read, SeekFrom};
 use std::str::FromStr;
 
 pub struct Parser<R: BufRead> {
     inner: R,
+}
+
+impl<R: BufRead> Debug for Parser<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Parser<..>")
+    }
 }
 
 #[derive(Debug)]
@@ -14,9 +21,37 @@ pub enum ParseError<Err> {
     Parse(Err),
 }
 
-impl<R: BufRead> Parser<R> {
+/// Buffered reader over a contiguous slice of in-memory bytes.
+pub type InMemoryReader = BufReader<Cursor<Vec<u8>>>;
+
+/// Parser over a contiguous slice of in-memory bytes.
+pub type InMemoryParser = Parser<InMemoryReader>;
+
+impl InMemoryParser {
+    pub fn reset(self) -> Self {
+        let buf = self.into_inner().into_inner().into_inner();
+        Parser::new(BufReader::new(Cursor::new(buf)))
+    }
+}
+
+impl<R: BufRead + Debug + Seek> Parser<R> {
+    /// Skip over the next `bytes` bytes.
+    pub fn skip(&mut self, bytes: usize) -> Result<()> {
+        Ok(self.inner.seek(SeekFrom::Current(bytes as _)).map(|_| ())?)
+    }
+}
+
+impl<R: BufRead + Debug> Parser<R> {
     pub fn new(reader: R) -> Self {
         Self { inner: reader }
+    }
+
+    pub fn inner_mut(&mut self) -> &mut R {
+        &mut self.inner
+    }
+
+    pub fn into_inner(self) -> R {
+        self.inner
     }
 
     pub fn parse_str(&mut self, delim: u8) -> Result<String> {
@@ -107,10 +142,7 @@ impl<R: BufRead> Parser<R> {
         Ok(self.inner.read_exact(buf)?)
     }
 
-    pub fn split_off_decode(
-        &mut self,
-        size: usize,
-    ) -> Result<(u64, Parser<BufReader<Cursor<Vec<u8>>>>)> {
+    pub fn split_off_decode(&mut self, size: usize) -> Result<(u64, InMemoryParser)> {
         let mut buf = vec![0; size];
         let mut decoder = ZlibDecoder::new(&mut self.inner);
         decoder.read_exact(&mut buf)?;

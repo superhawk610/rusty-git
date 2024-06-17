@@ -1,5 +1,5 @@
 use crate::commit::{Commit, CommitAttribution};
-use crate::object::Object;
+use crate::object::{Object, ObjectHashable};
 use eyre::Result;
 
 pub fn run(tree_hash: String, parent_hashes: Vec<String>, message: String) -> Result<()> {

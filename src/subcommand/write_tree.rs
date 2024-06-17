@@ -1,4 +1,4 @@
-use crate::object::Object;
+use crate::object::{Object, ObjectHashable};
 use eyre::Result;
 
 pub fn run() -> Result<()> {

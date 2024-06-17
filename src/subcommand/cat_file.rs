@@ -1,5 +1,6 @@
 use crate::object::{ObjectBuf, ObjectType};
 use eyre::{Context, Result};
+use std::fmt::Debug;
 use std::io::BufRead;
 
 pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
@@ -11,7 +12,7 @@ pub fn run(pretty: bool, object_hash: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn print_obj<R: BufRead>(mut object: ObjectBuf<R>) -> Result<()> {
+pub fn print_obj<R: BufRead + Debug>(mut object: ObjectBuf<R>) -> Result<()> {
     match &object.object_type {
         // FIXME: move object parsing into object.rs
         ObjectType::Blob => {

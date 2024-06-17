@@ -2,6 +2,8 @@ pub mod cat_file;
 pub mod clone;
 pub mod commit_tree;
 pub mod hash_object;
+pub mod index_pack;
 pub mod init;
 pub mod ls_tree;
+pub mod verify_pack;
 pub mod write_tree;

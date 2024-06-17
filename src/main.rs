@@ -50,6 +50,14 @@ enum Command {
         #[arg(value_name = "dir")]
         output_dir: Option<String>,
     },
+    IndexPack {
+        #[arg(value_name = "packfile")]
+        pack_file: String,
+    },
+    VerifyPack {
+        #[arg(value_name = "index_file")]
+        index_file: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -77,5 +85,7 @@ fn main() -> Result<()> {
             repo_url,
             output_dir,
         } => subcommand::clone::run(&repo_url, output_dir.as_deref()),
+        Command::IndexPack { pack_file } => subcommand::index_pack::run(pack_file),
+        Command::VerifyPack { index_file } => subcommand::verify_pack::run(&index_file),
     }
 }

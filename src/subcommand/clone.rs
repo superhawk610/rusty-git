@@ -1,6 +1,5 @@
 use crate::parser::Parser;
 use eyre::Result;
-use std::io::Read;
 
 #[derive(Debug)]
 struct Ref<'a, 'b> {
@@ -75,7 +74,7 @@ pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
             // bits should be concatenated, in reverse order (A is the low bits, B is high),
             // to form the actual value: 0b1111_1110
             let size_bytes = parser.parse_size_enc_bytes()?;
-            packfile_offset += size_bytes.len() as usize;
+            packfile_offset += size_bytes.len();
             for byte in size_bytes.iter() {
                 print!("{byte:08b} ");
             }

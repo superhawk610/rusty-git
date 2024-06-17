@@ -28,6 +28,7 @@ pub enum ObjectMode {
     Normal,
 }
 
+#[derive(Eq, PartialEq)]
 pub struct ObjectHash {
     hex: String,
     bin: [u8; 20],
@@ -40,6 +41,15 @@ impl ObjectHash {
             hex: format!("{:x}", digest),
             bin: digest.into(),
         }
+    }
+
+    pub fn from_bytes(bytes: &[u8; 20]) -> Self {
+        let mut hex = String::with_capacity(40);
+        use std::fmt::Write;
+        for byte in bytes.iter() {
+            write!(hex, "{:x}", byte).unwrap();
+        }
+        Self { hex, bin: *bytes }
     }
 
     pub fn as_hex(&self) -> &str {
@@ -108,10 +118,50 @@ impl Object {
             ObjectMode::Normal
         })
     }
+}
 
-    pub fn write<W: Write>(&self, mut w: W) -> Result<()> {
+pub trait ObjectHashable {
+    fn write<W: Write>(&mut self, w: W) -> Result<()>;
+
+    /// Consume the inner reader to determine the hash of this object.
+    fn hash(&mut self, write: bool) -> Result<ObjectHash>
+    where
+        Self: Sized,
+    {
+        fn write_hash<O: ObjectHashable, W: Write>(object: &mut O, mut w: W) -> Result<ObjectHash> {
+            let mut hasher = Sha1::new();
+            let mut writer = TeeWriter::new(&mut hasher, &mut w);
+            object.write(&mut writer)?;
+            Ok(ObjectHash::from_hasher(hasher))
+        }
+
+        if write {
+            let mut temp = NamedTempFile::new().context("create temp file")?;
+            let encoder = ZlibEncoder::new(&mut temp, flate2::Compression::default());
+
+            let hash = write_hash(self, encoder)?;
+
+            let prefix_dir = format!(".git/objects/{}", &hash.as_hex()[..2]);
+            match std::fs::create_dir(&prefix_dir) {
+                Ok(_) => (),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => (),
+                err @ Err(_) => err?,
+            };
+
+            std::fs::rename(temp, format!("{}/{}", prefix_dir, &hash.as_hex()[2..]))
+                .context("move temp file to .git/objects")?;
+
+            Ok(hash)
+        } else {
+            write_hash(self, std::io::sink())
+        }
+    }
+}
+
+impl ObjectHashable for Object {
+    fn write<W: Write>(&mut self, mut w: W) -> Result<()> {
         match self {
-            Self::Blob(path) => {
+            Self::Blob(ref path) => {
                 let meta = std::fs::metadata(path).context("stat file")?;
                 let mut f = File::open(path).context("open file")?;
                 write!(w, "blob {}\0", meta.len())?;
@@ -160,7 +210,7 @@ impl Object {
 
                 let mut buf = Vec::new();
 
-                for obj in objects {
+                for mut obj in objects {
                     write!(
                         buf,
                         "{} {}\0",
@@ -194,39 +244,10 @@ impl Object {
             }
         }
     }
-
-    pub fn hash(&self, write: bool) -> Result<ObjectHash> {
-        fn write_hash<W: Write>(object: &Object, mut w: W) -> Result<ObjectHash> {
-            let mut hasher = Sha1::new();
-            let mut writer = TeeWriter::new(&mut hasher, &mut w);
-            object.write(&mut writer)?;
-            Ok(ObjectHash::from_hasher(hasher))
-        }
-
-        if write {
-            let mut temp = NamedTempFile::new().context("create temp file")?;
-            let encoder = ZlibEncoder::new(&mut temp, flate2::Compression::default());
-
-            let hash = write_hash(self, encoder)?;
-
-            let prefix_dir = format!(".git/objects/{}", &hash.as_hex()[..2]);
-            match std::fs::create_dir(&prefix_dir) {
-                Ok(_) => (),
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => (),
-                err @ Err(_) => err?,
-            };
-
-            std::fs::rename(temp, format!("{}/{}", prefix_dir, &hash.as_hex()[2..]))
-                .context("move temp file to .git/objects")?;
-
-            Ok(hash)
-        } else {
-            write_hash(self, std::io::sink())
-        }
-    }
 }
 
-pub struct ObjectBuf<R: BufRead> {
+#[derive(Debug)]
+pub struct ObjectBuf<R: BufRead + Debug> {
     pub object_type: ObjectType,
     pub content_len: usize,
     pub contents: Parser<R>,
@@ -265,11 +286,29 @@ impl ObjectBuf<BufReader<ZlibDecoder<File>>> {
     }
 }
 
+impl<R: BufRead + Debug> ObjectHashable for ObjectBuf<R> {
+    fn write<W: Write>(&mut self, mut w: W) -> Result<()> {
+        write!(w, "{} {}\0", self.object_type, self.content_len)?;
+        let _ = std::io::copy(self.contents.inner_mut(), &mut w)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ObjectType {
     Blob,
     Commit,
     Tree,
+}
+
+impl Display for ObjectType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            ObjectType::Blob => write!(f, "blob"),
+            ObjectType::Commit => write!(f, "commit"),
+            ObjectType::Tree => write!(f, "tree"),
+        }
+    }
 }
 
 impl FromStr for ObjectType {
