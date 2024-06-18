@@ -1,8 +1,7 @@
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
 use std::fmt::Debug;
-use std::io::{BufRead, BufReader, Cursor, Seek};
-use std::io::{Read, SeekFrom};
+use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
 use std::str::FromStr;
 
 pub struct Parser<R: BufRead> {
@@ -22,22 +21,32 @@ pub enum ParseError<Err> {
 }
 
 /// Buffered reader over a contiguous slice of in-memory bytes.
-pub type InMemoryReader = BufReader<Cursor<Vec<u8>>>;
+pub type InMemoryReader = Cursor<Vec<u8>>;
 
 /// Parser over a contiguous slice of in-memory bytes.
 pub type InMemoryParser = Parser<InMemoryReader>;
 
 impl InMemoryParser {
-    pub fn reset(self) -> Self {
-        let buf = self.into_inner().into_inner().into_inner();
-        Parser::new(BufReader::new(Cursor::new(buf)))
+    pub fn get_ref(&self) -> &Vec<u8> {
+        self.inner.get_ref()
+    }
+}
+
+impl<R: BufRead + Debug + Seek> Seek for Parser<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
     }
 }
 
 impl<R: BufRead + Debug + Seek> Parser<R> {
+    /// Reset the internal cursor to the start of the content stream.
+    pub fn reset(&mut self) {
+        self.seek(SeekFrom::Start(0)).unwrap();
+    }
+
     /// Skip over the next `bytes` bytes.
-    pub fn skip(&mut self, bytes: usize) -> Result<()> {
-        Ok(self.inner.seek(SeekFrom::Current(bytes as _)).map(|_| ())?)
+    pub fn skip(&mut self, bytes: usize) {
+        self.seek(SeekFrom::Current(bytes as _)).unwrap();
     }
 }
 
@@ -147,7 +156,7 @@ impl<R: BufRead + Debug> Parser<R> {
         let mut decoder = ZlibDecoder::new(&mut self.inner);
         decoder.read_exact(&mut buf)?;
         let consumed = decoder.total_in();
-        Ok((consumed, Parser::new(BufReader::new(Cursor::new(buf)))))
+        Ok((consumed, Parser::new(Cursor::new(buf))))
     }
 
     pub fn at_eof(&mut self) -> Result<bool> {

@@ -4,49 +4,34 @@ use eyre::{Context, Result};
 use sha1::{Digest, Sha1};
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+
+pub const IDX_MAGIC_NUM: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
+pub const IDX_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub struct Pack {
-    version: u32,
-    obj_count: u32,
-    checksum: ObjectHash,
+    pub version: u32,
+    pub obj_count: u32,
+    pub checksum: ObjectHash,
 
     /// Compressed contents of the pack file; these are kept in order by their hashes.
-    contents: Vec<PackedObject>,
+    pub contents: Vec<PackedObject>,
 }
 
 #[derive(Debug)]
 pub struct PackedObject {
     /// The hash of the object this entry contains.
     pub hash: ObjectHash,
+    /// The cyclic redundancy check value for this object's contents.
+    pub crc32: u32,
     /// The decompressed size of this object's content.
     pub size: usize,
     /// The byte offset of this pack in the containing file.
     pub offset: usize,
-    pub inner: PackedObjectInner,
-}
-
-#[derive(Debug)]
-pub enum PackedObjectInner {
-    // 0 is invalid, 5 is reserved
-
-    // OBJ_COMMIT (1)
-    // OBJ_TREE (2)
-    // OBJ_BLOB (3)
-    Object(ObjectBuf<InMemoryReader>),
-
-    // OBJ_TAG (4)
-    // TODO: figure out how tags are stored
-
-    // OBJ_OFS_DELTA (6)
-    // OBJ_REF_DELTA (7)
-    Delta {
-        _type: DeltaType,
-        base_hash: String,
-        instructions: Vec<DeltaInstruction>,
-    },
+    /// The contents of the object.
+    pub inner: ObjectBuf<InMemoryReader>,
 }
 
 #[derive(Debug)]
@@ -56,15 +41,6 @@ pub enum DeltaInstruction {
 
     /// Append the contained bytes to the end of the object.
     Add(Vec<u8>),
-}
-
-#[derive(Debug)]
-pub enum DeltaType {
-    /// Relative offset to another object within the same packfile.
-    Offset,
-
-    /// Hash for another object that may or may not be in the same packfile.
-    Reference,
 }
 
 impl Pack {
@@ -87,7 +63,7 @@ impl Pack {
         // names contained within the packfile, see [here][so-packfile].
         //
         // [so-packfile]: https://stackoverflow.com/questions/5469978/git-pack-filenames-what-is-the-digest
-        parser.skip(file_size - 4 - 20)?;
+        parser.skip(file_size - 4 - 20);
         let checksum = ObjectHash::from_bytes(&parser.read_bytes::<20>()?);
 
         let mut f = parser.into_inner().into_inner();
@@ -134,7 +110,6 @@ impl Pack {
             // bits should be concatenated, in reverse order (A is the low bits, B is high),
             // to form the actual value: 0b1111_1110
             let size_bytes = parser.parse_size_enc_bytes()?;
-            offset += size_bytes.len();
 
             // Valid object types are:
             //
@@ -169,13 +144,23 @@ impl Pack {
                     };
 
                     let hash = object.hash(false).context("hash object contents")?;
-                    object.contents = object.contents.reset();
+                    object.contents.reset();
+
+                    let mut hasher = crc32fast::Hasher::new();
+                    parser.seek(SeekFrom::Start(offset as _)).unwrap();
+                    std::io::copy(
+                        &mut parser.inner_mut().take(consumed + size_bytes.len() as u64),
+                        &mut hasher,
+                    )?;
+                    let crc32 = hasher.finalize();
+                    object.contents.reset();
 
                     pack_contents.push(PackedObject {
                         hash,
+                        crc32,
                         size,
                         offset,
-                        inner: PackedObjectInner::Object(object),
+                        inner: object,
                     });
 
                     consumed as usize
@@ -192,31 +177,107 @@ impl Pack {
 
                 // REF delta uses the object's hash
                 7 => {
-                    let hash = parser.read_bytes::<20>()?;
-                    print!("object hash: ");
-                    for byte in hash.iter() {
-                        print!("{byte:x}");
-                    }
-                    println!();
+                    let base_hash = parser.read_bytes::<20>()?;
 
                     let (consumed, mut contents) = parser.split_off_decode(size)?;
 
                     let size_base_bytes = contents.parse_size_enc_bytes()?;
-                    dbg!(&size_base_bytes);
-                    print!("size_bash_bytes hash: ");
-                    for byte in size_base_bytes.iter() {
-                        print!("{byte:08b} ");
-                    }
-                    println!();
                     let size_base = size_enc(&size_base_bytes);
-                    dbg!(size_base);
 
                     let size_new_bytes = contents.parse_size_enc_bytes()?;
-                    dbg!(&size_new_bytes);
                     let size_new = size_enc(&size_new_bytes);
-                    dbg!(size_new);
 
-                    // TODO: parse instruction + apply until contents is consumed
+                    let mut instructions = Vec::new();
+                    while !contents.at_eof()? {
+                        let instr = contents.read_byte()?;
+
+                        if instr & 0x80 == 0 {
+                            let size = instr /* & 0x7f */;
+                            let mut data = vec![0; size as _];
+                            contents.read_exact(&mut data)?;
+                            instructions.push(DeltaInstruction::Add(data));
+                        } else {
+                            // TODO: not really sure what is meant by the zero value exception
+                            // here?
+                            //
+                            // > In its most compact form, this instruction only takes up one byte (0x80)
+                            // > with both offset and size omitted, which will have default values zero.
+                            // > There is another exception: size zero is automatically converted to 0x10000.
+
+                            let mut offset: u32 = 0;
+                            for (cond, shift) in [
+                                (instr & 0b0001, 0),
+                                (instr & 0b0010, 8),
+                                (instr & 0b0100, 16),
+                                (instr & 0b1000, 24),
+                            ] {
+                                if cond != 0 {
+                                    offset |= (contents.read_byte()? as u32) << shift;
+                                }
+                            }
+
+                            let mut size: u32 = 0;
+                            for (cond, shift) in [
+                                (instr & 0b0001_0000, 0),
+                                (instr & 0b0010_0000, 8),
+                                (instr & 0b0100_0000, 16),
+                            ] {
+                                if cond != 0 {
+                                    size |= (contents.read_byte()? as u32) << shift;
+                                }
+                            }
+
+                            instructions.push(DeltaInstruction::Copy {
+                                offset: offset as _,
+                                size: size as _,
+                            });
+                        }
+                    }
+
+                    let mut obj_buf = Vec::with_capacity(size_new);
+                    let base_obj = pack_contents
+                        .iter_mut()
+                        .find(|obj| obj.hash.as_bytes() == base_hash)
+                        .expect("base object should exist");
+
+                    for instr in instructions {
+                        match instr {
+                            DeltaInstruction::Copy { offset, size } => obj_buf.extend_from_slice(
+                                &base_obj.inner.contents.get_ref()[offset..][..size],
+                            ),
+                            DeltaInstruction::Add(data) => obj_buf.extend(data),
+                        }
+                    }
+
+                    base_obj.inner.contents.reset();
+
+                    let mut object = ObjectBuf {
+                        object_type: base_obj.inner.object_type,
+                        content_len: size_new,
+                        contents: Parser::new(Cursor::new(obj_buf)),
+                    };
+
+                    let hash = object.hash(false).context("hash object contents")?;
+                    object.contents.reset();
+
+                    let mut hasher = crc32fast::Hasher::new();
+                    parser.seek(SeekFrom::Start(offset as _)).unwrap();
+                    std::io::copy(
+                        &mut parser
+                            .inner_mut()
+                            .take(consumed + size_bytes.len() as u64 + 20),
+                        &mut hasher,
+                    )?;
+                    let crc32 = hasher.finalize();
+                    object.contents.reset();
+
+                    pack_contents.push(PackedObject {
+                        hash,
+                        crc32,
+                        size: size_new,
+                        offset,
+                        inner: object,
+                    });
 
                     (consumed as usize) + 20 // hash length
                 }
@@ -224,16 +285,16 @@ impl Pack {
                 _ => eyre::bail!("invalid object type (out of range)"),
             };
 
+            offset += size_bytes.len();
             offset += consumed;
 
             // Reset the file offset to the start of the next entry, or the checksum
             // if we've just finished parsing the final object entry. This is required
             // because `ZlibDecoder` is greedy and will pull in more bytes than it needs
             // to decode the contents, including some of the subsequent entry.
-            let mut f = parser.into_inner().into_inner();
-            f.seek(SeekFrom::Start(offset as _)).expect("valid offset");
-            let reader = BufReader::new(f);
-            parser = Parser::new(reader);
+            parser
+                .seek(SeekFrom::Start(offset as _))
+                .expect("valid offset");
         }
 
         // make sure pack contents are kept in ascending order by object hash
@@ -249,7 +310,47 @@ impl Pack {
 
     /// Open the packfile pointed to by the given index.
     pub fn open_index(path: impl AsRef<Path>) -> Result<Self> {
-        todo!()
+        let path = path.as_ref();
+
+        let mut parser = {
+            let f = File::open(path).context("open index file")?;
+            let reader = BufReader::new(f);
+            Parser::new(reader)
+        };
+
+        let mut pack_parser = {
+            let f = File::open(path.with_extension("pack")).context("open pack file")?;
+            let reader = BufReader::new(f);
+            Parser::new(reader)
+        };
+
+        let header = parser.read_bytes::<4>()?;
+        if header != IDX_MAGIC_NUM {
+            eyre::bail!("invalid idx file header");
+        }
+
+        let version = parser.parse_usize_exact::<4>()?;
+        if version != 2 {
+            eyre::bail!("only version 2 idx files are supported");
+        }
+
+        // fan-out table (except last entry)
+        let _ = parser.read_bytes::<1020>()?;
+
+        // TODO: verify pack header and version
+
+        let obj_count = parser.parse_usize_exact::<4>()? as u32;
+        dbg!(obj_count);
+
+        Ok(Self {
+            // FIXME: use actual pack version
+            version: 2,
+            obj_count,
+            // FIXME: use actual pack hash
+            checksum: ObjectHash::from_bytes(&[0; 20]),
+            // FIXME: use actual contents
+            contents: Vec::new(),
+        })
     }
 
     pub fn write_index(&self, path: impl AsRef<Path>) -> Result<()> {
@@ -267,11 +368,9 @@ impl Pack {
         // [1]: https://git-scm.com/docs/gitformat-pack#_version_2_pack_idx_files_support_packs_larger_than_4_gib_and
 
         // 1. magic number
-        const IDX_MAGIC_NUM: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
         writer.write_all(&IDX_MAGIC_NUM)?;
 
         // 2. version number
-        const IDX_VERSION: u32 = 2;
         writer.write_all(&IDX_VERSION.to_be_bytes())?;
 
         // 3. (layer 1) first-level fan-out table
@@ -298,8 +397,7 @@ impl Pack {
         // Since packfiles are optimized for usage across a network, these
         // check values allow us to verify that the pack's contents are valid.
         for obj in self.contents.iter() {
-            // FIXME: calculate and write actual CRC32 values
-            writer.write_all(&[0, 0, 0, 0])?;
+            writer.write_all(&obj.crc32.to_be_bytes())?;
         }
 
         // 6. (layer 4) packfile offsets
@@ -308,7 +406,7 @@ impl Pack {
             // MSB is reserved for indicating whether this is an offset value
             // in the packfile (MSB = 0), or an offset into layer 5 (MSB = 1)
             if obj.offset <= 0x7f_ff_ff_ff {
-                writer.write_all(&obj.offset.to_be_bytes())?;
+                writer.write_all(&(obj.offset as u32).to_be_bytes())?;
             } else {
                 assert!(
                     large_offsets.len() < 0x7f_ff_ff_ff,
@@ -367,6 +465,7 @@ impl FanOutTable {
 
         let first_byte = hash.as_bytes()[0];
         self.inner[first_byte as usize] += 1;
+        self.size += 1;
     }
 
     /// Return the cumulative frequency of all hashes added to the set.
@@ -374,7 +473,7 @@ impl FanOutTable {
         let mut i = 0;
         let mut sum = 0;
         std::iter::from_fn(move || {
-            if i < self.inner.len() - 1 {
+            if i < self.inner.len() {
                 sum += self.inner[i];
                 i += 1;
                 Some(sum)

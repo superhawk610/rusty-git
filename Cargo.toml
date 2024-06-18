@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.2", features = ["derive"] }
 color-eyre = "0.6.2"
+# pulling from this branch to get `std::io::Write` support for `Hasher`
+crc32fast = { git = "https://github.com/a1phyr/rust-crc32fast", branch = "write_hasher" }
 eyre = "0.6.12"
 flate2 = "1.0.28"
 io_tee = "0.1.1"

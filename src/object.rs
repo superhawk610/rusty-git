@@ -294,7 +294,7 @@ impl<R: BufRead + Debug> ObjectHashable for ObjectBuf<R> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ObjectType {
     Blob,
     Commit,

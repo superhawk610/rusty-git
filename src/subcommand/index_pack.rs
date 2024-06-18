@@ -9,6 +9,7 @@ pub fn run(pack_file: impl AsRef<Path>) -> Result<()> {
 
     let pack = Pack::open(pack_file)?;
     pack.write_index(index_file)?;
+    println!("{}", pack.checksum);
 
     Ok(())
 }
