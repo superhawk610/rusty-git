@@ -58,6 +58,7 @@ enum Command {
         #[arg(value_name = "index_file")]
         index_file: String,
     },
+    UnpackObjects,
 }
 
 fn main() -> Result<()> {
@@ -87,5 +88,6 @@ fn main() -> Result<()> {
         } => subcommand::clone::run(&repo_url, output_dir.as_deref()),
         Command::IndexPack { pack_file } => subcommand::index_pack::run(pack_file),
         Command::VerifyPack { index_file } => subcommand::verify_pack::run(&index_file),
+        Command::UnpackObjects => subcommand::unpack_objects::run(),
     }
 }

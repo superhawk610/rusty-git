@@ -5,5 +5,6 @@ pub mod hash_object;
 pub mod index_pack;
 pub mod init;
 pub mod ls_tree;
+pub mod unpack_objects;
 pub mod verify_pack;
 pub mod write_tree;

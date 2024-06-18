@@ -181,8 +181,9 @@ impl Pack {
 
                     let (consumed, mut contents) = parser.split_off_decode(size)?;
 
+                    // we don't need to know this but we do need to parse over it
                     let size_base_bytes = contents.parse_size_enc_bytes()?;
-                    let size_base = size_enc(&size_base_bytes);
+                    let _size_base = size_enc(&size_base_bytes);
 
                     let size_new_bytes = contents.parse_size_enc_bytes()?;
                     let size_new = size_enc(&size_new_bytes);
@@ -435,6 +436,17 @@ impl Pack {
         std::io::copy(&mut f, &mut hasher)?;
         let index_checksum = ObjectHash::from_hasher(hasher);
         f.write_all(&index_checksum.as_bytes())?;
+
+        Ok(())
+    }
+
+    pub fn unpack(&mut self) -> Result<()> {
+        for object in self.contents.iter_mut() {
+            println!("unpacking {}...", object.hash);
+            object.inner.hash(true)?;
+        }
+
+        println!("done!");
 
         Ok(())
     }

@@ -1,5 +1,5 @@
-use crate::parser::Parser;
-use eyre::Result;
+use crate::pack::Pack;
+use eyre::{Context, Result};
 
 #[derive(Debug)]
 struct Ref<'a, 'b> {
@@ -33,141 +33,37 @@ impl PacketLine {
 }
 
 pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
+    let repo_url = repo_url.trim_end_matches('/');
+
     let pack_path = std::path::Path::new("repo.pack");
     if pack_path.exists() {
         println!("found existing repo.pack packfile, using that...");
 
-        let packfile = std::fs::File::open(pack_path)?;
-        let packfile_size = packfile.metadata()?.len() as usize;
-        let reader = std::io::BufReader::new(packfile);
-        let mut parser = Parser::new(reader);
+        let mut pack = Pack::open(pack_path).context("read packfile")?;
 
-        let header = parser.parse_str_exact::<4>()?;
-        dbg!(header);
+        let output_dir = output_dir.unwrap_or_else(|| {
+            let (_, repo_name) = repo_url.rsplit_once('/').expect("repo url contains slash");
+            repo_name.trim_end_matches(".git")
+        });
+        std::fs::create_dir(output_dir).context("create directory to clone into")?;
+        std::env::set_current_dir(output_dir).expect("directory exists");
+        crate::subcommand::init::run().context("initialize empty repository")?;
+        pack.unpack().context("unpack packfile contents")?;
 
-        let version = parser.parse_usize_exact::<4>()?;
-        dbg!(version);
-
-        let obj_count = parser.parse_usize_exact::<4>()?;
-        dbg!(obj_count);
-
-        let mut packfile_offset: usize = 12; // 4 + 4 + 4
-        loop {
-            // the final 20 bytes of a packfile contain a hash of its contents
-            if packfile_offset == packfile_size - 20 {
-                let mut buf = [0; 20];
-                parser.read_exact(&mut buf)?;
-                print!("packfile hash: ");
-                for byte in buf.iter() {
-                    print!("{byte:x} ");
-                }
-                println!();
-                break;
-            }
-
-            // 1 0 0 1 1 1 1 0   0 0 0 0 1 1 1 1
-            // ^ |-t-| |--A--|   ^ |-----B-----|
-            //
-            // the MSB of each byte tells whether to continue parsing (variable len encoding)
-            //
-            // the first 3 bits of the result indicate the type (see below); the remaining
-            // bits should be concatenated, in reverse order (A is the low bits, B is high),
-            // to form the actual value: 0b1111_1110
-            let size_bytes = parser.parse_size_enc_bytes()?;
-            packfile_offset += size_bytes.len();
-            for byte in size_bytes.iter() {
-                print!("{byte:08b} ");
-            }
-            println!();
-
-            // Valid object types are:
-            //
-            //   - OBJ_COMMIT (1)
-            //   - OBJ_TREE (2)
-            //   - OBJ_BLOB (3)
-            //   - OBJ_TAG (4)
-            //   - OBJ_OFS_DELTA (6)
-            //   - OBJ_REF_DELTA (7)
-            //
-            // Type 5 is reserved for future expansion. Type 0 is invalid.
-            let obj_type = (size_bytes[0] & 0b0111_0000) >> 4;
-            dbg!(obj_type);
-
-            let mut size: usize = (size_bytes[0] & 0b0000_1111) as usize;
-            size = size_enc_init(&size_bytes[1..], size, 4);
-            dbg!(size);
-            println!("{size:016b}");
-
-            use crate::object::{ObjectBuf, ObjectType};
-
-            let consumed = match obj_type {
-                // OFS delta encodes the offset of the object in the pack
-                6 => todo!("OFS delta encoding"),
-                // REF delta uses the object's hash
-                7 => {
-                    let hash = parser.read_bytes::<20>()?;
-                    print!("object hash: ");
-                    for byte in hash.iter() {
-                        print!("{byte:x}");
-                    }
-                    println!();
-
-                    let (consumed, mut contents) = parser.split_off_decode(size)?;
-
-                    let size_base_bytes = contents.parse_size_enc_bytes()?;
-                    dbg!(&size_base_bytes);
-                    print!("size_bash_bytes hash: ");
-                    for byte in size_base_bytes.iter() {
-                        print!("{byte:08b} ");
-                    }
-                    println!();
-                    let size_base = size_enc(&size_base_bytes);
-                    dbg!(size_base);
-
-                    let size_new_bytes = contents.parse_size_enc_bytes()?;
-                    dbg!(&size_new_bytes);
-                    let size_new = size_enc(&size_new_bytes);
-                    dbg!(size_new);
-
-                    // TODO: parse instruction + apply until contents is consumed
-
-                    (consumed as usize) + 20
-                }
-                _ => {
-                    let (consumed, contents) = parser.split_off_decode(size)?;
-
-                    // TODO: figure out how to display/store tags
-                    if obj_type != 4 {
-                        println!("------------------");
-                        let object = ObjectBuf {
-                            object_type: match obj_type {
-                                1 => ObjectType::Commit,
-                                2 => ObjectType::Tree,
-                                3 => ObjectType::Blob,
-                                _ => panic!("unrecognized object type {obj_type}"),
-                            },
-                            content_len: size,
-                            contents,
-                        };
-                        crate::subcommand::cat_file::print_obj(object)?;
-                        println!();
-                    }
-
-                    consumed as usize
-                }
-            };
-
-            packfile_offset += consumed;
-            let packfile = std::fs::File::open(pack_path)?;
-            let mut reader = std::io::BufReader::new(packfile);
-            reader.seek_relative(packfile_offset as _)?;
-            parser = Parser::new(reader);
-        }
+        // FIXME: use the `head_ref` from the server response
+        let head_ref = Ref {
+            hash: "341e1584c9ca9432fa182de6a595348483ed137b",
+            name: "main",
+        };
+        std::fs::create_dir(".git/refs/heads").context("create .git/refs/heads")?;
+        std::fs::write(
+            ".git/refs/heads/main",
+            format!("{}\n", head_ref.hash).as_bytes(),
+        )
+        .context("create .git/refs/heads/main")?;
 
         return Ok(());
     }
-
-    let repo_url = repo_url.trim_end_matches('/');
 
     let refs = fetch_refs(repo_url)?;
 
