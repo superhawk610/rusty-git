@@ -1,10 +1,11 @@
 use crate::pack::Pack;
 use eyre::{Context, Result};
+use std::io::Write;
 
 #[derive(Debug)]
-struct Ref<'a, 'b> {
-    hash: &'a str,
-    name: &'b str,
+struct Ref {
+    hash: String,
+    name: String,
 }
 
 #[derive(Debug)]
@@ -35,55 +36,46 @@ impl PacketLine {
 pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
     let repo_url = repo_url.trim_end_matches('/');
 
-    let pack_path = std::path::Path::new("repo.pack");
-    if pack_path.exists() {
-        println!("found existing repo.pack packfile, using that...");
-
-        let mut pack = Pack::open(pack_path).context("read packfile")?;
-
-        let output_dir = output_dir.unwrap_or_else(|| {
-            let (_, repo_name) = repo_url.rsplit_once('/').expect("repo url contains slash");
-            repo_name.trim_end_matches(".git")
-        });
-        std::fs::create_dir(output_dir).context("create directory to clone into")?;
-        std::env::set_current_dir(output_dir).expect("directory exists");
-        crate::subcommand::init::run().context("initialize empty repository")?;
-        pack.unpack().context("unpack packfile contents")?;
-
-        // FIXME: use the `head_ref` from the server response
-        let head_ref = Ref {
-            hash: "341e1584c9ca9432fa182de6a595348483ed137b",
-            name: "main",
-        };
-        std::fs::create_dir(".git/refs/heads").context("create .git/refs/heads")?;
-        std::fs::write(
-            ".git/refs/heads/main",
-            format!("{}\n", head_ref.hash).as_bytes(),
-        )
-        .context("create .git/refs/heads/main")?;
-
-        return Ok(());
-    }
-
     let refs = fetch_refs(repo_url)?;
 
     let head_ref = refs
         .iter()
         .find(|_ref| _ref.name == "HEAD")
         .expect("HEAD ref must exist");
-    dbg!(head_ref);
 
     let packfile = fetch_packfile(repo_url, head_ref)?;
 
     if packfile.is_empty() {
-        println!("oops! looks like we didn't receive anything in the packfile");
-    } else {
-        use std::io::Write;
-
-        let mut f = std::fs::File::create("repo.pack")?;
-        f.write_all(&packfile)?;
-        println!("wrote packfile contents to repo.pack");
+        eyre::bail!("oops! looks like we didn't receive anything in the packfile");
     }
+
+    let mut f = std::fs::File::create("repo.pack")?;
+    f.write_all(&packfile)?;
+    drop(f);
+
+    let mut pack = Pack::open("repo.pack").context("read packfile")?;
+
+    let output_dir = output_dir.unwrap_or_else(|| {
+        let (_, repo_name) = repo_url.rsplit_once('/').expect("repo url contains slash");
+        repo_name.trim_end_matches(".git")
+    });
+    std::fs::create_dir(output_dir).context("create directory to clone into")?;
+    std::env::set_current_dir(output_dir).expect("directory exists");
+    crate::subcommand::init::run().context("initialize empty repository")?;
+    pack.unpack().context("unpack packfile contents")?;
+
+    // TODO: check out actual files, not just .git directory
+
+    std::fs::create_dir(".git/refs/heads").context("create .git/refs/heads")?;
+    std::fs::write(
+        ".git/refs/heads/main",
+        format!("{}\n", head_ref.hash).as_bytes(),
+    )
+    .context("create .git/refs/heads/main")?;
+
+    drop(pack);
+    std::env::set_current_dir("..").expect("directory exists");
+    std::fs::remove_file("repo.pack").context("remove packfile")?;
 
     Ok(())
 }
@@ -91,17 +83,14 @@ pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
 fn fetch_refs(repo_url: &str) -> Result<Vec<Ref>> {
     // TODO: verify that first line is # service=git-upload-pack
     // TODO: verify that content-type is application/x-git-upload-pack-advertisement
-    // let refs_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
-    // let resp = reqwest::blocking::get(refs_url)?.bytes()?;
-    // dbg!(&resp);
-
-    let resp = b"001e# service=git-upload-pack\n00000153341e1584c9ca9432fa182de6a595348483ed137b HEAD\0multi_ack thin-pack side-band side-band-64k ofs-delta shallow deepen-since deepen-not deepen-relative no-progress include-tag multi_ack_detailed allow-tip-sha1-in-want allow-reachable-sha1-in-want no-done symref=HEAD:refs/heads/main filter object-format=sha1 agent=git/github-f133c3a1d7e6\n003d341e1584c9ca9432fa182de6a595348483ed137b refs/heads/main\n0000";
+    let refs_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
+    let resp = reqwest::blocking::get(refs_url)?.bytes()?;
 
     let mut refs: Vec<Ref> = Vec::new();
     let mut extras: Vec<&str> = Vec::new();
 
     // skip the first line, since it will just be the service announcement header
-    for (index, line) in pkt_line_iter(resp).skip(1).enumerate() {
+    for (index, line) in pkt_line_iter(&resp).skip(1).enumerate() {
         let line = pkt_line_str(line);
         let (hash, line) = line
             .split_once(' ')
@@ -119,11 +108,11 @@ fn fetch_refs(repo_url: &str) -> Result<Vec<Ref>> {
             line
         };
 
-        refs.push(Ref { hash, name });
+        refs.push(Ref {
+            hash: hash.to_owned(),
+            name: name.to_owned(),
+        });
     }
-
-    println!("{refs:#?}");
-    println!("{extras:#?}");
 
     Ok(refs)
 }
@@ -152,7 +141,6 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     body.push_str(&PacketLine::new(format!("want {} side-band-64k", head_ref.hash)).repr());
     body.push_str(&PacketLine::flush().repr());
     body.push_str(&PacketLine::new("done").repr());
-    dbg!(&body);
 
     let client = reqwest::blocking::Client::new();
     let url = format!("{}/git-upload-pack", repo_url);
@@ -168,7 +156,7 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
 
     let mut line_iter = pkt_line_iter(&resp);
     // TODO: verify that this is `NAK`
-    dbg!(pkt_line_str(line_iter.next().unwrap()));
+    let _ = pkt_line_str(line_iter.next().unwrap());
 
     let mut packfile: Vec<u8> = Vec::new();
 
@@ -193,22 +181,6 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     }
 
     Ok(packfile)
-}
-
-fn size_enc(size_bytes: &[u8]) -> usize {
-    size_enc_init(size_bytes, 0, 0)
-}
-
-fn size_enc_init(size_bytes: &[u8], init_n: usize, init_shift: usize) -> usize {
-    let mut n = init_n;
-    let mut shift = init_shift;
-
-    for byte in size_bytes {
-        n += ((byte & 0b0111_1111) as usize) << shift;
-        shift += 7;
-    }
-
-    n
 }
 
 fn pkt_line_str(pkt: &[u8]) -> &str {
