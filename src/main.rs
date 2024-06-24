@@ -59,10 +59,14 @@ enum Command {
         index_file: String,
     },
     UnpackObjects,
+    Checkout {
+        branch: String,
+    },
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    tracing_subscriber::fmt::init();
 
     let app = App::parse();
     match app.command {
@@ -89,5 +93,6 @@ fn main() -> Result<()> {
         Command::IndexPack { pack_file } => subcommand::index_pack::run(pack_file),
         Command::VerifyPack { index_file } => subcommand::verify_pack::run(&index_file),
         Command::UnpackObjects => subcommand::unpack_objects::run(),
+        Command::Checkout { branch } => subcommand::checkout::run(&branch),
     }
 }

@@ -129,7 +129,7 @@ impl Pack {
             let consumed = match obj_type {
                 0 => eyre::bail!("invalid object type (invalid)"),
 
-                1..=3 => {
+                1..=4 => {
                     let (consumed, contents) = parser.split_off_decode(size)?;
 
                     let mut object = ObjectBuf {
@@ -137,6 +137,7 @@ impl Pack {
                             1 => ObjectType::Commit,
                             2 => ObjectType::Tree,
                             3 => ObjectType::Blob,
+                            4 => ObjectType::Tag,
                             _ => unreachable!("only 1..=3 available in parent match"),
                         },
                         content_len: size,
@@ -165,9 +166,6 @@ impl Pack {
 
                     consumed as usize
                 }
-
-                // TODO: figure out how to display/store tags
-                4 => todo!("tag encoding"),
 
                 5 => eyre::bail!("invalid object type (reserved)"),
 

@@ -1,4 +1,5 @@
 use crate::pack::Pack;
+use crate::packet_line::{pkt_line_iter, pkt_line_str, pkt_line_str_keep_newline, PacketLine};
 use eyre::{Context, Result};
 use std::io::Write;
 
@@ -8,41 +9,17 @@ struct Ref {
     name: String,
 }
 
-#[derive(Debug)]
-struct PacketLine(String);
-
-impl PacketLine {
-    fn flush() -> Self {
-        Self("".into())
-    }
-
-    fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-
-    fn repr(&self) -> String {
-        // so-called "flush" packets should be treated differently
-        // than an empty packet (`0004`), which should never be sent
-        // over the wire
-        if self.0.is_empty() {
-            "0000".into()
-        } else {
-            // # of bytes in line + 4 bytes for length + 1 byte for newline
-            format!("{:04x}{}\n", self.0.len() + 5, self.0)
-        }
-    }
-}
-
 pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
     let repo_url = repo_url.trim_end_matches('/');
 
-    let refs = fetch_refs(repo_url)?;
+    let (refs, extras) = fetch_refs(repo_url)?;
 
     let head_ref = refs
         .iter()
         .find(|_ref| _ref.name == "HEAD")
         .expect("HEAD ref must exist");
 
+    let default_branch = find_default_branch(&extras);
     let packfile = fetch_packfile(repo_url, head_ref)?;
 
     if packfile.is_empty() {
@@ -59,38 +36,61 @@ pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
         let (_, repo_name) = repo_url.rsplit_once('/').expect("repo url contains slash");
         repo_name.trim_end_matches(".git")
     });
+
     std::fs::create_dir(output_dir).context("create directory to clone into")?;
-    std::env::set_current_dir(output_dir).expect("directory exists");
-    crate::subcommand::init::run().context("initialize empty repository")?;
+    std::env::set_current_dir(output_dir).unwrap();
+
+    crate::subcommand::init::with_default_branch(default_branch)
+        .context("initialize empty repository")?;
+
     pack.unpack().context("unpack packfile contents")?;
-
-    // TODO: check out actual files, not just .git directory
-
-    std::fs::create_dir(".git/refs/heads").context("create .git/refs/heads")?;
-    std::fs::write(
-        ".git/refs/heads/main",
-        format!("{}\n", head_ref.hash).as_bytes(),
-    )
-    .context("create .git/refs/heads/main")?;
-
     drop(pack);
-    std::env::set_current_dir("..").expect("directory exists");
+
+    let git_dir = std::path::Path::new(".git");
+    let ref_file = git_dir.join(format!("heads/refs/{default_branch}"));
+    std::fs::create_dir_all(ref_file.parent().unwrap()).context("create default ref parent")?;
+    std::fs::write(ref_file, format!("{}\n", head_ref.hash).as_bytes())
+        .context(format!("create .git/refs/heads/{}", default_branch))?;
+
+    crate::subcommand::checkout::run(default_branch)?;
+
+    std::env::set_current_dir("..").unwrap();
     std::fs::remove_file("repo.pack").context("remove packfile")?;
 
     Ok(())
 }
 
-fn fetch_refs(repo_url: &str) -> Result<Vec<Ref>> {
-    // TODO: verify that first line is # service=git-upload-pack
-    // TODO: verify that content-type is application/x-git-upload-pack-advertisement
+fn fetch_refs(repo_url: &str) -> Result<(Vec<Ref>, Vec<String>)> {
     let refs_url = format!("{}/info/refs?service=git-upload-pack", repo_url);
-    let resp = reqwest::blocking::get(refs_url)?.bytes()?;
+    let resp = reqwest::blocking::get(refs_url)?;
+
+    const ADV_CONTENT_TYPE: &str = "application/x-git-upload-pack-advertisement";
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if content_type != ADV_CONTENT_TYPE {
+        tracing::warn!(
+            "bad remote: unexpected content type (wanted \"{}\", got \"{}\")",
+            ADV_CONTENT_TYPE,
+            content_type
+        );
+    }
+
+    let bytes = resp.bytes()?;
+    let mut line_iter = pkt_line_iter(&bytes);
+    let announce = line_iter.next().unwrap_or(b"");
+    if announce != b"# service=git-upload-pack\n" {
+        tracing::debug!("bad remote: first line from git-upload-pack should announce service");
+        tracing::debug!("{}", String::from_utf8_lossy(announce));
+        eyre::bail!("bad remote");
+    }
 
     let mut refs: Vec<Ref> = Vec::new();
-    let mut extras: Vec<&str> = Vec::new();
+    let mut extras: Vec<String> = Vec::new();
 
-    // skip the first line, since it will just be the service announcement header
-    for (index, line) in pkt_line_iter(&resp).skip(1).enumerate() {
+    for (index, line) in line_iter.enumerate() {
         let line = pkt_line_str(line);
         let (hash, line) = line
             .split_once(' ')
@@ -100,10 +100,21 @@ fn fetch_refs(repo_url: &str) -> Result<Vec<Ref>> {
             match line.split_once('\0') {
                 None => line,
                 Some((name, kvps)) => {
-                    extras.extend(kvps.split(' '));
+                    extras.extend(kvps.split(' ').map(String::from));
                     name
                 }
             }
+        } else if line.ends_with("^{}") {
+            // TODO: peeled refs
+            //
+            // For example:
+            //
+            //   aaa refs/tags/1
+            //   bbb refs/tags/1^{}
+            //
+            // aaa is an annotated tag that points to bbb
+            // aaa is "peeled off" to get bbb
+            continue;
         } else {
             line
         };
@@ -114,9 +125,38 @@ fn fetch_refs(repo_url: &str) -> Result<Vec<Ref>> {
         });
     }
 
-    Ok(refs)
+    Ok((refs, extras))
 }
 
+// In order to determine the default branch after a clone, we need
+// to find a commit that matches `HEAD`. For newer versions of git,
+// that's reported by the `symref` capability. For older versions,
+// `refs/heads/master` is preferred if available; if not, the first
+// matching ref (sorted alphabetically) is chosen instead. [1]
+//
+// [1]: https://stackoverflow.com/questions/18726037/what-determines-default-branch-after-git-clone
+fn find_default_branch(extras: &[String]) -> &str {
+    let default_ref = extras
+        .iter()
+        .find(|ex| ex.starts_with("symref="))
+        .map(|ex| {
+            let (head, _ref) = ex
+                .trim_start_matches("symref=")
+                .split_once(':')
+                .expect("valid symref format");
+            assert!(head == "HEAD", "symref should start with HEAD");
+            _ref
+        })
+        .unwrap_or_else(|| todo!("default branch resolution when server doesn't support symref"));
+
+    let (_, default_branch) = default_ref
+        .rsplit_once('/')
+        .expect("ref to be formatted as refs/heads/$BRANCH");
+
+    default_branch
+}
+
+// TODO: fetch more than just HEAD?
 fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     // side-band, side-band-64k
     //
@@ -155,8 +195,10 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
         .bytes()?;
 
     let mut line_iter = pkt_line_iter(&resp);
-    // TODO: verify that this is `NAK`
-    let _ = pkt_line_str(line_iter.next().unwrap());
+
+    if pkt_line_str(line_iter.next().unwrap()) != "NAK" {
+        eyre::bail!("expected server to respond");
+    }
 
     let mut packfile: Vec<u8> = Vec::new();
 
@@ -166,10 +208,7 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
         };
 
         match channel {
-            1 => {
-                println!("received data packet w/ len {}", line.len());
-                packfile.extend_from_slice(line);
-            }
+            1 => packfile.extend_from_slice(line),
             2 | 3 => {
                 // TODO: switch away from reqwest blocking to display this in real time
                 print!("remote: {}", pkt_line_str_keep_newline(line));
@@ -181,43 +220,4 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     }
 
     Ok(packfile)
-}
-
-fn pkt_line_str(pkt: &[u8]) -> &str {
-    pkt_line_str_keep_newline(pkt).trim_end_matches('\n')
-}
-
-fn pkt_line_str_keep_newline(pkt: &[u8]) -> &str {
-    std::str::from_utf8(pkt).expect("valid utf-8")
-}
-
-fn pkt_line_iter(mut input: &[u8]) -> impl Iterator<Item = &[u8]> {
-    std::iter::from_fn(move || {
-        let mut len: usize;
-
-        // skip all flush pkts
-        loop {
-            if input.is_empty() {
-                return None;
-            }
-
-            len = usize::from_str_radix(
-                std::str::from_utf8(&input[..4]).expect("pkt len is valid utf-8"),
-                16,
-            )
-            .expect("parse pkt len");
-
-            // `0000` is a "flush pkt" and should be handled differently than an empty line (`0004`);
-            // servers aren't ever supposed to send empty lines
-            if len == 0 {
-                input = &input[4..];
-            } else {
-                break;
-            }
-        }
-
-        let line = &input[..len][4..];
-        input = &input[len..];
-        Some(line)
-    })
 }

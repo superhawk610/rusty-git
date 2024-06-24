@@ -37,7 +37,7 @@ pub fn print_obj<R: BufRead + Debug>(mut object: ObjectBuf<R>) -> Result<()> {
         // tree objects delegate to `ls-tree`
         ObjectType::Tree => crate::subcommand::ls_tree::print_tree(false, object),
 
-        ObjectType::Commit => {
+        ObjectType::Commit | ObjectType::Tag => {
             let mut buf = vec![0; object.content_len];
             object.contents.read_exact(&mut buf)?;
             println!("{}", String::from_utf8_lossy(&buf));

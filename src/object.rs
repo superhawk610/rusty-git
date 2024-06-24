@@ -1,5 +1,6 @@
 use crate::commit::Commit;
 use crate::parser::{ParseError, Parser};
+use crate::tag::Tag;
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -18,6 +19,7 @@ pub enum Object {
     Blob(PathBuf),
     Tree(PathBuf),
     Commit(Commit),
+    Tag(Tag),
 }
 
 #[derive(Debug)]
@@ -28,7 +30,6 @@ pub enum ObjectMode {
     Normal,
 }
 
-#[derive(Eq, PartialEq)]
 pub struct ObjectHash {
     hex: String,
     bin: [u8; 20],
@@ -58,6 +59,12 @@ impl ObjectHash {
 
     pub fn as_bytes(&self) -> [u8; 20] {
         self.bin
+    }
+}
+
+impl PartialEq for ObjectHash {
+    fn eq(&self, other: &Self) -> bool {
+        self.bin == other.bin
     }
 }
 
@@ -101,7 +108,7 @@ impl Object {
         match self {
             Self::Blob(path) => path,
             Self::Tree(path) => path,
-            Self::Commit(_) => panic!("attempted to call .path() on a commit object"),
+            _ => panic!("attempted to call .path() on a commit object"),
         }
     }
 
@@ -205,7 +212,7 @@ impl ObjectHashable for Object {
                         str.push("/");
                         str
                     }
-                    Object::Commit(_) => unreachable!(),
+                    _ => unreachable!(),
                 });
 
                 let mut buf = Vec::new();
@@ -242,6 +249,15 @@ impl ObjectHashable for Object {
 
                 Ok(())
             }
+            Self::Tag(tag) => {
+                // tag 138\0object 4add12bd026aa518fd2cbf5bac54dfa43c4917c8
+                // type commit
+                // tag v2.1.4
+                // tagger Aaron Ross <superhawk610@gmail.com> 1552434926 -0400
+                //
+                // 2.1.4
+                todo!("format tag");
+            }
         }
     }
 }
@@ -260,7 +276,7 @@ impl ObjectBuf<BufReader<ZlibDecoder<File>>> {
             &object_hash[..2],
             &object_hash[2..]
         ))
-        .context("read object file")?;
+        .with_context(|| format!("read object file at {object_hash}"))?;
 
         let decoder = ZlibDecoder::new(f);
         let reader = BufReader::new(decoder);
@@ -299,6 +315,7 @@ pub enum ObjectType {
     Blob,
     Commit,
     Tree,
+    Tag,
 }
 
 impl Display for ObjectType {
@@ -307,6 +324,7 @@ impl Display for ObjectType {
             ObjectType::Blob => write!(f, "blob"),
             ObjectType::Commit => write!(f, "commit"),
             ObjectType::Tree => write!(f, "tree"),
+            ObjectType::Tag => write!(f, "tag"),
         }
     }
 }
@@ -319,6 +337,7 @@ impl FromStr for ObjectType {
             "blob" => Ok(Self::Blob),
             "commit" => Ok(Self::Commit),
             "tree" => Ok(Self::Tree),
+            "tag" => Ok(Self::Tag),
             _ => Err(String::from(s)),
         }
     }
