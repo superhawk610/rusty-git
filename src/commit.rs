@@ -40,8 +40,8 @@ impl Commit {
         let mut committer: Option<String> = None;
 
         let mut lines = s.lines();
-        while let Some(line) = lines.next() {
-            if line == "" {
+        for line in lines.by_ref() {
+            if line.is_empty() {
                 break;
             }
 

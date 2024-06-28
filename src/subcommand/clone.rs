@@ -57,6 +57,8 @@ pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
     std::env::set_current_dir("..").unwrap();
     std::fs::remove_file("repo.pack").context("remove packfile")?;
 
+    println!("Done!");
+
     Ok(())
 }
 

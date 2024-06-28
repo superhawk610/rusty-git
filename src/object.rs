@@ -22,7 +22,7 @@ pub enum Object {
     Tag(Tag),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ObjectMode {
     Symlink,
     Directory,
@@ -48,7 +48,7 @@ impl ObjectHash {
         let mut hex = String::with_capacity(40);
         use std::fmt::Write;
         for byte in bytes.iter() {
-            write!(hex, "{:x}", byte).unwrap();
+            write!(hex, "{:02x}", byte).unwrap();
         }
         Self { hex, bin: *bytes }
     }
@@ -87,6 +87,20 @@ impl Display for ObjectMode {
             Self::Directory => write!(f, "40000"),
             Self::Executable => write!(f, "100755"),
             Self::Normal => write!(f, "100644"),
+        }
+    }
+}
+
+impl FromStr for ObjectMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        match s {
+            "120000" => Ok(Self::Symlink),
+            "40000" => Ok(Self::Directory),
+            "100755" => Ok(Self::Executable),
+            "100644" => Ok(Self::Normal),
+            _ => Err(String::from(s)),
         }
     }
 }

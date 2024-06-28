@@ -440,11 +440,8 @@ impl Pack {
 
     pub fn unpack(&mut self) -> Result<()> {
         for object in self.contents.iter_mut() {
-            println!("unpacking {}...", object.hash);
             object.inner.hash(true)?;
         }
-
-        println!("done!");
 
         Ok(())
     }
