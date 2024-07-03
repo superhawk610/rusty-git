@@ -8,10 +8,10 @@ found [here](https://github.com/codecrafters-io/build-your-own-git/blob/main/cou
 
 ## Usage
 
-The following git commands are implemented:
+The following git commands are (at least partially) implemented:
 
 - [x] `cat-file`
-- [-] `checkout`
+- [x] `checkout`
 - [x] `clone`
 - [x] `commit-tree`
 - [x] `hash-object`
