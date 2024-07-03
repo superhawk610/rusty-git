@@ -47,7 +47,7 @@ pub fn run(repo_url: &str, output_dir: Option<&str>) -> Result<()> {
     drop(pack);
 
     let git_dir = std::path::Path::new(".git");
-    let ref_file = git_dir.join(format!("heads/refs/{default_branch}"));
+    let ref_file = git_dir.join(format!("refs/heads/{default_branch}"));
     std::fs::create_dir_all(ref_file.parent().unwrap()).context("create default ref parent")?;
     std::fs::write(ref_file, format!("{}\n", head_ref.hash).as_bytes())
         .context(format!("create .git/refs/heads/{}", default_branch))?;

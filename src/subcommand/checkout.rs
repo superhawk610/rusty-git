@@ -7,7 +7,7 @@ use std::path::PathBuf;
 // FIXME: make sure that working directory is clean first
 pub fn run(branch: &str) -> Result<()> {
     let commit_hash =
-        std::fs::read_to_string(format!(".git/heads/refs/{branch}")).context("read branch ref")?;
+        std::fs::read_to_string(format!(".git/refs/heads/{branch}")).context("read branch ref")?;
     let commit_hash = commit_hash.trim_end();
 
     let commit = {
