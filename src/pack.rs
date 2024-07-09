@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+pub const PACK_HEADER: &[u8; 4] = b"PACK";
 pub const IDX_MAGIC_NUM: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
 pub const IDX_VERSION: u32 = 2;
 
@@ -52,36 +53,17 @@ impl Pack {
         let mut parser = Parser::new(reader);
 
         // first, verify that the magic header is present and well-formed
-        let header = parser.parse_str_exact::<4>()?;
-        if header != "PACK" {
-            eyre::bail!("malformed packfile header");
+        let header = parser.read_bytes::<4>()?;
+        if &header != PACK_HEADER {
+            eyre::bail!(
+                "invalid header; expected {:?}, got {:?}",
+                PACK_HEADER,
+                header
+            );
         }
 
-        // second, verify that the 20-byte SHA-1 checksum at the end
-        // of the file matches the SHA-1 of the remaining file contents
-        // (older git implementations used a SHA-1 hash of the object
-        // names contained within the packfile, see [here][so-packfile].
-        //
-        // [so-packfile]: https://stackoverflow.com/questions/5469978/git-pack-filenames-what-is-the-digest
-        parser.skip(file_size - 4 - 20);
-        let checksum = ObjectHash::from_bytes(&parser.read_bytes::<20>()?);
-
-        let mut f = parser.into_inner().into_inner();
-        f.seek(SeekFrom::Start(0)).unwrap();
-        let mut hasher = Sha1::new();
-        std::io::copy(
-            &mut f.try_clone().unwrap().take(file_size as u64 - 20),
-            &mut hasher,
-        )?;
-        let sha1 = ObjectHash::from_hasher(hasher);
-
-        if sha1 != checksum {
-            eyre::bail!("checksums don't match (wanted {}, got {})", checksum, sha1);
-        }
-
-        f.seek(SeekFrom::Start(4)).unwrap();
-        let reader = BufReader::new(f);
-        parser = Parser::new(reader);
+        // second, verify that the checksum at the end of the packfile
+        let (checksum, mut parser) = parser.verify_checksum(file_size)?;
 
         let version = parser
             .parse_usize_exact::<4>()

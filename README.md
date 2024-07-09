@@ -18,6 +18,7 @@ The following git commands are (at least partially) implemented:
 - [x] `index-pack`
 - [x] `init`
 - [x] `ls-tree`
+- [ ] `status`
 - [ ] `unpack-objects`
 - [ ] `verify-pack`
 - [x] `write-tree`

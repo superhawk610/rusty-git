@@ -62,6 +62,14 @@ enum Command {
     Checkout {
         branch: String,
     },
+    LsFiles {
+        #[arg(short, long)]
+        cached: bool,
+
+        #[arg(short, long = "stage")]
+        staged: bool,
+    },
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -94,5 +102,7 @@ fn main() -> Result<()> {
         Command::VerifyPack { index_file } => subcommand::verify_pack::run(&index_file),
         Command::UnpackObjects => subcommand::unpack_objects::run(),
         Command::Checkout { branch } => subcommand::checkout::run(&branch),
+        Command::LsFiles { cached, staged } => subcommand::ls_files::run(cached, staged),
+        Command::Status => subcommand::status::run(),
     }
 }

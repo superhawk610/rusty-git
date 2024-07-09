@@ -1,7 +1,10 @@
+use crate::object::ObjectHash;
 use eyre::{Context, Result};
 use flate2::read::ZlibDecoder;
+use sha1::{Digest, Sha1};
 use std::fmt::Debug;
-use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::str::FromStr;
 
 pub struct Parser<R: BufRead> {
@@ -161,5 +164,35 @@ impl<R: BufRead + Debug> Parser<R> {
 
     pub fn at_eof(&mut self) -> Result<bool> {
         Ok(self.inner.fill_buf().context("peek contents")?.is_empty())
+    }
+}
+
+impl Parser<BufReader<File>> {
+    pub fn verify_checksum(mut self, file_size: usize) -> Result<(ObjectHash, Self)> {
+        // verify that the 20-byte SHA-1 checksum at the end of the file
+        // matches the SHA-1 of the remaining file contents (older git
+        // implementations used a SHA-1 hash of the object names contained
+        // within the packfile, see [here][so-packfile]).
+        //
+        // [so-packfile]: https://stackoverflow.com/questions/5469978/git-pack-filenames-what-is-the-digest
+        self.skip(file_size - 4 - 20);
+        let checksum = ObjectHash::from_bytes(&self.read_bytes::<20>()?);
+
+        let mut f = self.into_inner().into_inner();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        let mut hasher = Sha1::new();
+        std::io::copy(
+            &mut f.try_clone().unwrap().take(file_size as u64 - 20),
+            &mut hasher,
+        )?;
+        let sha1 = ObjectHash::from_hasher(hasher);
+
+        if sha1 != checksum {
+            eyre::bail!("checksums don't match (wanted {}, got {})", checksum, sha1);
+        }
+
+        f.seek(SeekFrom::Start(4)).unwrap();
+        let reader = BufReader::new(f);
+        Ok((checksum, Self::new(reader)))
     }
 }

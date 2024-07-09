@@ -1,4 +1,5 @@
 mod commit;
+mod index;
 mod object;
 mod pack;
 mod packet_line;
