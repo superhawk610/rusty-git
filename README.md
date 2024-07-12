@@ -18,18 +18,13 @@ The following git commands are (at least partially) implemented:
 - [x] `index-pack`
 - [x] `init`
 - [x] `ls-tree`
-- [ ] `status`
+- [x] `status`
 - [ ] `unpack-objects`
 - [ ] `verify-pack`
 - [x] `write-tree`
 
 Note that some optional flags aren't supported; git's staging area is also not
 implemented, nor is support for the `.gitignore` file.
-
-### TODO
-
-- use non-blocking HTTP calls to get real-time server responses
-- implement staging area, so `checkout` shows clean working directory
 
 Here are some things you can do:
 
