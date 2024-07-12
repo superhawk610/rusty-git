@@ -1,9 +1,10 @@
 use eyre::{Context, Result};
 use std::fmt::{Debug, Display};
 use std::io::BufReader;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 
-use crate::object::ObjectHash;
+use crate::object::{Object, ObjectHash, ObjectHashable};
 use crate::parser::Parser;
 
 pub const INDEX_HEADER: &[u8; 4] = b"DIRC";
@@ -234,5 +235,82 @@ impl Index {
         }
 
         Ok(Self { version, entries })
+    }
+
+    pub fn working_tree(path: impl AsRef<Path>) -> Result<Self> {
+        let path: &Path = path.as_ref();
+
+        if path.is_file() {
+            eyre::bail!("path must be a directory, got \"{}\"", path.display());
+        }
+
+        fn entries_in_dir(path: &Path) -> Result<Vec<IndexEntry>> {
+            let mut entries: Vec<IndexEntry> = Vec::new();
+
+            // FIXME: actually read .gitignore
+            let path_str = format!("{}", path.display());
+            if path_str.contains(".git") || path_str.contains("target") {
+                return Ok(Vec::new());
+            }
+
+            for dir_entry in std::fs::read_dir(path)? {
+                let dir_entry = dir_entry?;
+
+                if dir_entry.metadata()?.is_file() {
+                    entries.push(IndexEntry::from_path(dir_entry.path())?);
+                } else {
+                    entries.extend(entries_in_dir(&dir_entry.path())?.into_iter());
+                }
+            }
+
+            Ok(entries)
+        }
+
+        let mut entries = entries_in_dir(path)?;
+        entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(Self {
+            version: 2,
+            entries,
+        })
+    }
+}
+
+impl IndexEntry {
+    fn from_path(path: impl AsRef<Path>) -> Result<IndexEntry> {
+        let path: &Path = path.as_ref();
+        let f = std::fs::File::open(path)?;
+        let metadata = f.metadata()?;
+
+        let _type = if metadata.file_type().is_symlink() {
+            IndexEntryType::SymbolicLink
+        } else {
+            IndexEntryType::RegularFile
+        };
+
+        let permissions = if metadata.file_type().is_symlink() {
+            IndexEntryPermissions::None
+        } else if metadata.permissions().mode() & 0o111 != 0 {
+            IndexEntryPermissions::ExecutableFile
+        } else {
+            IndexEntryPermissions::RegularFile
+        };
+
+        let hash = Object::blob(path).hash(false)?;
+        let name = format!("{}", path.display())
+            .trim_start_matches("./")
+            .to_owned();
+        // FIXME: assume-valid, extended, stage
+        let flags = (name.len() & 0xfff) as u16;
+
+        Ok(Self {
+            stats: IndexEntryStats::from_metadata(&metadata),
+            _type,
+            permissions,
+            hash,
+            name,
+            flags,
+            flags_ext: 0,
+        })
     }
 }
