@@ -1,6 +1,7 @@
-use crate::object::ObjectBuf;
+use crate::commit::Commit;
+use crate::index::Index;
+use crate::object::{ObjectBuf, ObjectType};
 use crate::tree::Tree;
-use crate::{commit::Commit, object::ObjectType};
 use eyre::{Context, Result};
 use std::path::PathBuf;
 
@@ -21,6 +22,11 @@ pub fn run(branch: &str) -> Result<()> {
     };
 
     unpack_in(PathBuf::from("."), &tree).context("check out file contents")?;
+
+    Index::working_tree()
+        .context("read working tree")?
+        .write_default()
+        .context("write working tree to index")?;
 
     Ok(())
 }

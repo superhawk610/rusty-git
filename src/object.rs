@@ -30,6 +30,7 @@ pub enum ObjectMode {
     Normal,
 }
 
+#[derive(Clone)]
 pub struct ObjectHash {
     hex: String,
     bin: [u8; 20],

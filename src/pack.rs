@@ -1,7 +1,7 @@
 use crate::object::{ObjectBuf, ObjectHash, ObjectHashable, ObjectType};
 use crate::parser::{InMemoryReader, Parser};
+use crate::utils::append_checksum;
 use eyre::{Context, Result};
-use sha1::{Digest, Sha1};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -410,12 +410,7 @@ impl Pack {
         writer.write_all(&self.checksum.as_bytes())?;
 
         // 9. index file checksum
-        let mut f = writer.into_inner()?;
-        f.seek(SeekFrom::Start(0)).unwrap();
-        let mut hasher = Sha1::new();
-        std::io::copy(&mut f, &mut hasher)?;
-        let index_checksum = ObjectHash::from_hasher(hasher);
-        f.write_all(&index_checksum.as_bytes())?;
+        append_checksum(writer.into_inner()?)?;
 
         Ok(())
     }

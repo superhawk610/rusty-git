@@ -10,7 +10,7 @@ pub fn run() -> Result<()> {
 
     let index = Index::read_default().context("read index")?;
     let mut working_tree: HashMap<String, IndexEntry> = {
-        let Index { entries, .. } = Index::working_tree(".").context("read working tree")?;
+        let Index { entries, .. } = Index::working_tree().context("read working tree")?;
         HashMap::from_iter(entries.into_iter().map(|entry| (entry.name.clone(), entry)))
     };
 
@@ -92,16 +92,25 @@ pub fn run() -> Result<()> {
                 .paint("(use \"git add <file>...\" to include in what will be committed)")
         );
 
-        for file in added {
+        for file in added.iter() {
             println!(
                 "\t{} {} {}",
                 Style::new().dimmed().fg(Color::Green).paint("[+]"),
                 Style::new().italic().fg(Color::Green).paint("added:"),
-                Style::new().bold().fg(Color::Green).paint(file),
+                Style::new().bold().fg(Color::Green).paint(*file),
             );
         }
 
         println!();
+    }
+
+    if modified.is_empty() && deleted.is_empty() && added.is_empty() {
+        println!(
+            "{}",
+            Style::new()
+                .dimmed()
+                .paint("nothing to commit, working tree clean")
+        );
     }
 
     Ok(())

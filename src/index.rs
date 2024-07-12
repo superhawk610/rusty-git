@@ -1,11 +1,12 @@
 use eyre::{Context, Result};
 use std::fmt::{Debug, Display};
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use crate::object::{Object, ObjectHash, ObjectHashable};
 use crate::parser::Parser;
+use crate::utils::append_checksum;
 
 pub const INDEX_HEADER: &[u8; 4] = b"DIRC";
 
@@ -15,7 +16,7 @@ pub struct Index {
     pub entries: Vec<IndexEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IndexEntry {
     pub stats: IndexEntryStats,
     pub _type: IndexEntryType,
@@ -26,7 +27,7 @@ pub struct IndexEntry {
     pub flags_ext: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IndexEntryStats {
     pub ctime: u32,
     pub ctime_nsec: u32,
@@ -56,7 +57,7 @@ impl IndexEntryStats {
 }
 
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum IndexEntryType {
     RegularFile = 0b1000,
     SymbolicLink = 0b1010,
@@ -88,7 +89,7 @@ impl TryFrom<u8> for IndexEntryType {
 }
 
 #[repr(u16)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum IndexEntryPermissions {
     /// Symbolic links and gitlinks have no permissions.
     None = 0,
@@ -111,7 +112,11 @@ impl TryFrom<u16> for IndexEntryPermissions {
 
 impl Index {
     pub fn read_default() -> Result<Self> {
-        let f = std::fs::File::open(".git/index").context("open default index file")?;
+        Self::read(".git/index")
+    }
+
+    pub fn read(path: impl AsRef<Path>) -> Result<Self> {
+        let f = std::fs::File::open(path.as_ref()).context("open default index file")?;
         let file_size = f.metadata()?.len() as usize;
 
         let reader = BufReader::new(f);
@@ -237,13 +242,7 @@ impl Index {
         Ok(Self { version, entries })
     }
 
-    pub fn working_tree(path: impl AsRef<Path>) -> Result<Self> {
-        let path: &Path = path.as_ref();
-
-        if path.is_file() {
-            eyre::bail!("path must be a directory, got \"{}\"", path.display());
-        }
-
+    pub fn working_tree() -> Result<Self> {
         fn entries_in_dir(path: &Path) -> Result<Vec<IndexEntry>> {
             let mut entries: Vec<IndexEntry> = Vec::new();
 
@@ -266,13 +265,83 @@ impl Index {
             Ok(entries)
         }
 
-        let mut entries = entries_in_dir(path)?;
+        let mut entries = entries_in_dir(Path::new("."))?;
         entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
         Ok(Self {
             version: 2,
             entries,
         })
+    }
+
+    pub fn write_default(&self) -> Result<()> {
+        self.write(".git/index")
+    }
+
+    pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
+        let f = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path.as_ref())
+            .context("open or create index file")?;
+        let mut writer = BufWriter::new(f);
+
+        // 1. header
+        writer.write_all(INDEX_HEADER)?;
+
+        // 2. version
+        writer.write_all(&2u32.to_be_bytes())?;
+
+        // 3. entry count
+        writer.write_all(&(self.entries.len() as u32).to_be_bytes())?;
+
+        // 4. entries
+        for entry in self.entries.iter() {
+            // 4a. ctime
+            writer.write_all(&entry.stats.ctime.to_be_bytes())?;
+            // 4b. ctime_nsec
+            writer.write_all(&entry.stats.ctime_nsec.to_be_bytes())?;
+            // 4c. mtime
+            writer.write_all(&entry.stats.mtime_nsec.to_be_bytes())?;
+            // 4d. mtime_nsec
+            writer.write_all(&entry.stats.mtime_nsec.to_be_bytes())?;
+            // 4e. dev
+            writer.write_all(&entry.stats.dev.to_be_bytes())?;
+            // 4f. ino
+            writer.write_all(&entry.stats.ino.to_be_bytes())?;
+            // 4g. 2 bytes padding
+            writer.write_all(&[0, 0])?;
+            // 4h. mode
+            writer.write_all(&((entry._type as u16) << 12).to_be_bytes())?;
+            // 4i. uid
+            writer.write_all(&entry.stats.uid.to_be_bytes())?;
+            // 4j. gid
+            writer.write_all(&entry.stats.gid.to_be_bytes())?;
+            // 4k. size
+            writer.write_all(&entry.stats.size.to_be_bytes())?;
+            // 4l. hash
+            writer.write_all(&entry.hash.as_bytes())?;
+            // 4m. flags
+            writer.write_all(&entry.flags.to_be_bytes())?;
+            // 4n. flags_ext (v3+, skipped for version 2)
+            // 4o. name
+            writer.write_all(entry.name.as_bytes())?;
+            writer.write_all(&[0])?;
+            // 4p. padding
+            let overflow = (62 + entry.name.len() + 1) % 8;
+            if overflow > 0 {
+                writer.write_all(&vec![0; 8 - overflow])?;
+            }
+        }
+
+        // 5. extensions (skipped)
+
+        // 6. checksum
+        append_checksum(writer.into_inner()?)?;
+
+        Ok(())
     }
 }
 
@@ -301,7 +370,11 @@ impl IndexEntry {
             .trim_start_matches("./")
             .to_owned();
         // FIXME: assume-valid, extended, stage
-        let flags = (name.len() & 0xfff) as u16;
+        let flags = if name.len() < 0xfff {
+            name.len() as u16
+        } else {
+            0xfff_u16
+        };
 
         Ok(Self {
             stats: IndexEntryStats::from_metadata(&metadata),
