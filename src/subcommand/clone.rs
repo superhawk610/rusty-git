@@ -1,6 +1,9 @@
 use crate::pack::Pack;
-use crate::packet_line::{pkt_line_iter, pkt_line_str, pkt_line_str_keep_newline, PacketLine};
+use crate::packet_line::{
+    pkt_line_iter, pkt_line_str, pkt_line_str_keep_newline, PacketLine, PacketLineStream,
+};
 use eyre::{Context, Result};
+use futures_util::StreamExt;
 use std::io::Write;
 
 #[derive(Debug)]
@@ -160,6 +163,13 @@ fn find_default_branch(extras: &[String]) -> &str {
 
 // TODO: fetch more than just HEAD?
 fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
+    use tokio::runtime::Runtime;
+
+    let rt = Runtime::new().unwrap();
+    rt.block_on(fetch_packfile_inner(repo_url, head_ref))
+}
+
+async fn fetch_packfile_inner(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     // side-band, side-band-64k
     //
     // This capability means that server can send, and client understand multiplexed progress
@@ -178,33 +188,34 @@ fn fetch_packfile(repo_url: &str, head_ref: &Ref) -> Result<Vec<u8>> {
     //   2 - progress messages
     //   3 - fatal error message just before stream aborts
     //
-
     let mut body = String::new();
     body.push_str(&PacketLine::new(format!("want {} side-band-64k", head_ref.hash)).repr());
     body.push_str(&PacketLine::flush().repr());
     body.push_str(&PacketLine::new("done").repr());
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     let url = format!("{}/git-upload-pack", repo_url);
-    let resp = client
+    let resp_stream = client
         .post(url)
         .header(
             reqwest::header::CONTENT_TYPE,
             "application/x-git-upload-pack-request",
         )
         .body(body)
-        .send()?
-        .bytes()?;
+        .send()
+        .await?
+        .bytes_stream();
 
-    let mut line_iter = pkt_line_iter(&resp);
+    let mut line_stream = PacketLineStream::new(resp_stream);
 
-    if pkt_line_str(line_iter.next().unwrap()) != "NAK" {
+    if pkt_line_str(line_stream.next().await.unwrap()?.as_ref()) != "NAK" {
         eyre::bail!("expected server to respond");
     }
 
     let mut packfile: Vec<u8> = Vec::new();
 
-    for line in line_iter {
+    while let Some(line) = line_stream.next().await {
+        let line = line?;
         let Some((channel, line)) = line.split_first() else {
             eyre::bail!("malformed packet w/out channel");
         };

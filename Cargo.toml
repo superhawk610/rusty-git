@@ -7,15 +7,20 @@ edition = "2021"
 
 [dependencies]
 ansi_term = "0.12.1"
+bytes = "1.6.0"
 clap = { version = "4.5.2", features = ["derive"] }
 color-eyre = "0.6.2"
 # pulling from this branch to get `std::io::Write` support for `Hasher`
 crc32fast = { git = "https://github.com/a1phyr/rust-crc32fast", branch = "write_hasher" }
 eyre = "0.6.12"
 flate2 = "1.0.28"
+futures-core = "0.3.30"
+futures-util = "0.3.30"
 io_tee = "0.1.1"
-reqwest = { version = "0.12.4", features = ["blocking"] }
+pin-project-lite = "0.2.14"
+reqwest = { version = "0.12.4", features = ["blocking", "stream"] }
 sha1 = "0.10.6"
 tempfile = "3.10.1"
+tokio = "1.38.0"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
